@@ -103,6 +103,8 @@ def load_test_model(opt, model_path=None):
         torch.quantization.quantize_dynamic(model, inplace=True)
     model.eval()
     model.generator.eval()
+    model = torch.jit.freeze(torch.jit.script(model))
+    print("Model successfully JIT frozen.")
     return fields, model, model_opt
 
 
