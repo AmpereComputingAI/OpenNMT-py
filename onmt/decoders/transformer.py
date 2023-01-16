@@ -144,13 +144,15 @@ class TransformerDecoderLayerBase(nn.Module):
             dec_mask = tgt_pad_mask
         return dec_mask
 
-    def _forward_self_attn(self, layer_in_norm, dec_mask, step):
+    def _forward_self_attn(self, layer_in_norm, dec_mask, step, cached_self_attn_keys, cached_self_attn_values):
         if self.self_attn_type == "scaled-dot":
             return self.self_attn(
                 layer_in_norm,
                 layer_in_norm,
                 layer_in_norm,
-                mask=dec_mask
+                mask=dec_mask,
+                cached_keys=cached_self_attn_keys,
+                cached_values=cached_self_attn_values
             )
         elif self.self_attn_type == "average":
             return self.self_attn(
@@ -225,6 +227,10 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
         tgt_pad_mask,
         step=None,
         future=False,
+        cached_self_attn_key=None,
+        cached_self_attn_value=None,
+        cached_context_attn_key=None,
+        cached_context_attn_value=None
     ):
         """A naive forward pass for transformer decoder.
 
@@ -259,8 +265,11 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
 
         layer_in_norm = self.layer_norm_1(layer_in)
 
+        print("before attention")
+        print(cached_self_attn_key, cached_self_attn_value, cached_context_attn_key, cached_context_attn_value)
+
         query, _ = self._forward_self_attn(
-            layer_in_norm, dec_mask, step
+            layer_in_norm, dec_mask, step, cached_self_attn_key, cached_self_attn_value
         )
 
         query = self.drop(query) + layer_in
@@ -271,8 +280,12 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
             enc_out,
             enc_out,
             query_norm,
-            mask=src_pad_mask
+            mask=src_pad_mask,
+            cached_keys=cached_context_attn_key,
+            cached_values=cached_context_attn_value
         )
+        print("after attention")
+        print(cached_self_attn_key, cached_self_attn_value, cached_context_attn_key, cached_context_attn_value)
         layer_out = self.feed_forward(self.drop(mid) + query)
 
         return layer_out, attns
@@ -323,27 +336,30 @@ class TransformerDecoderBase(DecoderBase):
         """Initialize decoder state."""
         self.state["src"] = src
 
-    def map_state(self, fn):
-
-        if self.state["src"] is not None:
-            self.state["src"] = fn(self.state["src"], 0)
-        for layer in self.transformer_layers:
-            if hasattr(layer, 'context_attn'):
-                if layer.context_attn.layer_cache[1]['keys'].numel() != 0:
-                    x = fn(layer.context_attn.layer_cache[1]['keys'], 0)
-                    y = fn(layer.context_attn.layer_cache[1]['values'], 0)
-                    layer.context_attn.layer_cache = True, {'keys': x,
-                                                            'values': y}
-            if isinstance(layer.self_attn, AverageAttention):
-                if layer.self_attn.layer_cache[1]['prev_g'].numel() != 0:
-                    x = fn(layer.self_attn.layer_cache[1]['prev_g'], 0)
-                    layer.self_attn.layer_cache = True, {'prev_g': x}
-            else:
-                if layer.self_attn.layer_cache[1]['keys'].numel() != 0:
-                    x = fn(layer.self_attn.layer_cache[1]['keys'], 0)
-                    y = fn(layer.self_attn.layer_cache[1]['values'], 0)
-                    layer.self_attn.layer_cache = True, {'keys': x,
-                                                         'values': y}
+    def map_state(self, cached_state, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, fn):
+        print("map_state")
+        if cached_state is not None:
+            cached_state = fn(cached_state, 0)
+        for tensor in cached_self_attn_keys:
+            if tensor.numel() != 0:
+                tensor = fn(tensor, 0)
+                print("self attn key")
+                print(tensor)
+        for tensor in cached_self_attn_values:
+            if tensor.numel() != 0:
+                tensor = fn(tensor, 0)
+                print("self attn val")
+                print(tensor)
+        for tensor in cached_context_attn_keys:
+            if tensor.numel() != 0:
+                tensor = fn(tensor, 0)
+                print("ctx attn key")
+                print(tensor)
+        for tensor in cached_context_attn_values:
+            if tensor.numel() != 0:
+                tensor = fn(tensor, 0)
+                print("ctx attn val")
+                print(tensor)
 
     def detach_state(self):
         raise NotImplementedError
@@ -429,7 +445,7 @@ class TransformerDecoder(TransformerDecoderBase):
     def detach_state(self):
         self.state["src"] = self.state["src"].detach()
 
-    def forward(self, tgt, enc_out=None, step=None, **kwargs):
+    def forward(self, tgt, src_len, enc_out=None, step=None, cached_self_attn_keys=None, cached_self_attn_values=None, cached_context_attn_keys=None, cached_context_attn_values=None, cached_state=None, **kwargs):
         """
         Decode, possibly stepwise.
         when training step is always None, when decoding, step increases
@@ -438,8 +454,7 @@ class TransformerDecoder(TransformerDecoderBase):
         """
         if enc_out is None:
             enc_out = self.embeddings(tgt)
-        if step == 0:
-            self._init_cache(enc_out)
+        step = step.item()
 
         tgt_words = tgt[:, :, 0]
 
@@ -448,14 +463,15 @@ class TransformerDecoder(TransformerDecoderBase):
         assert emb.dim() == 3  # len x batch x embedding_dim
 
         pad_idx = self.embeddings.word_padding_idx
-        src_lens = kwargs["src_len"]
-        src_max_len = self.state["src"].shape[1]
-        src_pad_mask = ~sequence_mask(src_lens, src_max_len)  # [B x slen]
+        src_max_len = cached_state.shape[1]
+        src_pad_mask = ~sequence_mask(src_len, src_max_len)  # [B x slen]
         src_pad_mask = src_pad_mask.unsqueeze(1)  # [B x 1 x slen]
         tgt_pad_mask = tgt_words.data.eq(pad_idx).unsqueeze(1)  # [B, 1, T_tgt]
 
         with_align = kwargs.pop("with_align", False)
         attn_aligns = []
+
+        idx = 0
 
         for layer in self.transformer_layers:
             dec_out, attn, attn_align = layer(
@@ -465,21 +481,26 @@ class TransformerDecoder(TransformerDecoderBase):
                 tgt_pad_mask,
                 step=step,
                 with_align=with_align,
+                cached_self_attn_key=cached_self_attn_keys[idx],
+                cached_self_attn_value=cached_self_attn_values[idx],
+                cached_context_attn_key=cached_context_attn_keys[idx],
+                cached_context_attn_value=cached_context_attn_values[idx]
             )
+            idx = idx + 1
             if attn_align is not None:
                 attn_aligns.append(attn_align)
 
         dec_out = self.layer_norm(dec_out)
 
-        attns = {"std": attn}
-        if self._copy:
-            attns["copy"] = attn
-        if with_align:
-            attns["align"] = attn_aligns[self.alignment_layer]  # `(B, Q, K)`
+        #attns = {"std": attn}
+        #if self._copy:
+        #    attns["copy"] = attn
+        #if with_align:
+        #    attns["align"] = attn_aligns[self.alignment_layer]  # `(B, Q, K)`
             # attns["align"] = torch.stack(attn_aligns, 0).mean(0)  # All avg
 
         # TODO change the way attns is returned dict => list or tuple (onnx)
-        return dec_out, attns
+        return dec_out, attn
 
     def _init_cache(self, enc_out):
 
@@ -503,7 +524,7 @@ class TransformerDecoder(TransformerDecoderBase):
                     True,
                     {'keys': torch.tensor([], device=enc_out.device),
                      'values': torch.tensor([], device=enc_out.device)}
-                    )
+                    )      
 
 
 class TransformerLMDecoderLayer(TransformerDecoderLayerBase):

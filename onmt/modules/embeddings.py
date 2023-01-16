@@ -51,7 +51,7 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
         self.dim = dim
 
-    def forward(self, emb, step=None):
+    def forward(self, emb, step:int = None):
         """Embed inputs.
 
         Args:
@@ -249,7 +249,7 @@ class Embeddings(nn.Module):
             else:
                 self.word_lut.weight.data.copy_(pretrained)
 
-    def forward(self, source, step=None):
+    def forward(self, source, step:int=None):
         """Computes the embeddings for words and features.
 
         Args:

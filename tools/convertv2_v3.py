@@ -47,7 +47,7 @@ if __name__ == "__main__":
     module2 = imp.load_source("onmt.inputters.text_dataset",
                               "tools/convertv2_v3.py")
     # module3 = imp.load_source("Vocab", "tools/convertv2_v3.py")
-    checkpoint = torch.load(opt.v2model)
+    checkpoint = torch.load(opt.v2model, map_location=torch.device("cpu"))
     vocabs = {}
     multifield = checkpoint['vocab']['src']
     multifields = multifield.fields

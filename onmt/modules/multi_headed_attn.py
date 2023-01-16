@@ -113,7 +113,7 @@ class MultiHeadedAttention(nn.Module):
 
     def __init__(self, head_count: int, model_dim: int, dropout: float = 0.1,
                  max_relative_positions: int = 0,
-                 attn_type: str = None, add_qkvbias=False) -> None:
+                 attn_type: str = None, add_qkvbias=False, inference: bool = True) -> None:
 
         assert model_dim % head_count == 0
         self.dim_per_head = model_dim // head_count
@@ -129,8 +129,7 @@ class MultiHeadedAttention(nn.Module):
 
         self.max_relative_positions = max_relative_positions
         self.attn_type = attn_type
-        self.layer_cache = (False, {'keys': torch.tensor([]),
-                                    'values': torch.tensor([])})
+        self.inference = inference
         if max_relative_positions > 0:
             # https://arxiv.org/pdf/1803.02155.pdf
             # in the paper they suggest either two embeds
@@ -148,7 +147,8 @@ class MultiHeadedAttention(nn.Module):
 
     # @torch.jit.script_method
     def forward(self, key: Tensor, value: Tensor,
-                query: Tensor, mask: Optional[Tensor] = None
+                query: Tensor, mask: Optional[Tensor] = None, 
+                cached_keys: Optional[Tensor] = None, cached_values: Optional[Tensor] = None
                 ) -> Tuple[Tensor, Tensor]:
         """
         Compute the context vector and the attention vectors.
@@ -169,43 +169,50 @@ class MultiHeadedAttention(nn.Module):
            * Attention vector in heads ``(batch, head, query_len, key_len)``.
         """
         # 1) Project key, value, and query.
-        # as a reminder at training layer_cache[0] remains False
-        if self.layer_cache[0]:
+        if self.inference:
             if self.attn_type == "self":
                 query, key, value = self.linear_query(query),\
                                     self.linear_keys(query),\
                                     self.linear_values(query)
                 key = shape(key, self.dim_per_head)
                 value = shape(value, self.dim_per_head)
-                if self.layer_cache[1]['keys'].numel() != 0:
-                    key = torch.cat(
-                        (self.layer_cache[1]['keys'], key),
-                        dim=2)
+                #print("key")
+                #print(cached_keys, key)
+                #print("value")
+                #print(cached_values, value)
 
-                if self.layer_cache[1]['values'].numel() != 0:
-                    value = torch.cat(
-                        (self.layer_cache[1]['values'], value),
-                        dim=2)
-                self.layer_cache[1]['keys'] = key
-                self.layer_cache[1]['values'] = value
+                key = torch.cat((cached_keys, key), dim=2)
+                value = torch.cat((cached_values, value), dim=2)
+                #cached_keys = key
+                #cached_values = value
+                cached_keys.resize_(key.shape)
+                cached_keys.copy_(key)
+                cached_values.resize_(value.shape)
+                cached_values.copy_(value)
+
+                #print("after")
+                #print(key, value)
             elif self.attn_type == "context":
                 query = self.linear_query(query)
-                if self.layer_cache[1]['keys'].numel() == 0:
+                if cached_keys.numel() == 0:
                     key, value = self.linear_keys(key),\
                                  self.linear_values(value)
                     key = shape(key, self.dim_per_head)
                     value = shape(value, self.dim_per_head)
+                    cached_keys.resize_(key.shape)
+                    cached_keys.copy_(key)
+                    cached_values.resize_(value.shape)
+                    cached_values.copy_(value)
                 else:
-                    key, value = self.layer_cache[1]['keys'],\
-                               self.layer_cache[1]['values']
-                self.layer_cache[1]['keys'] = key
-                self.layer_cache[1]['values'] = value
+                    key, value = cached_keys, cached_values
+
         else:
             key = self.linear_keys(key)
             value = self.linear_values(value)
             query = self.linear_query(query)
             key = shape(key, self.dim_per_head)
             value = shape(value, self.dim_per_head)
+
 
         query = shape(query, self.dim_per_head)
 
@@ -219,7 +226,7 @@ class MultiHeadedAttention(nn.Module):
             # 1 or key_len x key_len
             relative_positions_matrix = gen_relative_positions(
                 key_len, self.max_relative_positions,
-                cache=self.layer_cache[0],
+                cache=self.inference,
                 device=key.device)
             #  1 or key_len x key_len x dim_per_head
             relations_keys = self.relative_positions_embeddings(

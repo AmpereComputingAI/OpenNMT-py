@@ -345,10 +345,11 @@ class Inference(object):
         start_time = time.time()
 
         for batch in infer_iter:
-
+            start = time.time()
             batch_data = self.translate_batch(
                 batch, attn_debug
             )
+
             translations = xlation_builder.from_batch(batch_data)
 
             for trans in translations:
@@ -432,6 +433,10 @@ class Inference(object):
                         self.logger.info(output)
                     else:
                         os.write(1, output.encode("utf-8"))
+
+            end = time.time()
+            print("inference")
+            print((end - start) * 1000)
 
         end_time = time.time()
 
@@ -519,12 +524,45 @@ class Inference(object):
             )
         return msg
 
+    def map_state(self, cached_state, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, fn):
+        print("cached state")
+        print(cached_state)
+        if cached_state is not None:
+            cached_state = fn(cached_state, 0)
+        for tensor in cached_self_attn_keys:
+            if tensor.numel() != 0:
+                tensor = fn(tensor, 0)
+                print("self attn key")
+                print(tensor)
+        for tensor in cached_self_attn_values:
+            if tensor.numel() != 0:
+                tensor = fn(tensor, 0)
+                print("self attn val")
+                print(tensor)
+        for tensor in cached_context_attn_keys:
+            if tensor.numel() != 0:
+                tensor = fn(tensor, 0)
+                print("ctx attn key")
+                print(tensor)
+        for tensor in cached_context_attn_values:
+            if tensor.numel() != 0:
+                tensor = fn(tensor, 0)
+                print("ctx attn val")
+                print(tensor)
+
+        return cached_state
+
     def _decode_and_generate(
         self,
         decoder_in,
         enc_out,
         batch,
         src_len,
+        cached_self_attn_keys, 
+        cached_self_attn_values, 
+        cached_context_attn_keys, 
+        cached_context_attn_values,
+        src,
         src_map=None,
         step=None,
         batch_offset=None,
@@ -540,19 +578,54 @@ class Inference(object):
         # in case of inference tgt_len = 1, batch = beam times batch_size
         # in case of Gold Scoring tgt_len = actual length, batch = 1 batch
 
+        #if not self.model.decoder_frozen:
+        #   self.model.decoder = torch.jit.trace(self.model.decoder, (decoder_in, src_len, enc_out, torch.tensor([step]), cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, src))
+        #   self.model.decoder = torch.jit.freeze(self.model.decoder)
+        #   torch.jit.save(self.model.decoder, "decoder.pt")
+        #   self.model.decoder_frozen = True
+
+
+        start = time.time()
+
+        print("cached tensors")
+        print(cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values)
+
         dec_out, dec_attn = self.model.decoder(
-            decoder_in, enc_out, src_len=src_len, step=step
+            decoder_in, src_len, enc_out, torch.tensor([step]),
+            cached_self_attn_keys,
+            cached_self_attn_values,
+            cached_context_attn_keys,
+            cached_context_attn_values,
+            cached_state=src
         )
+
+        print("cached")
+        print(cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values)
+
+        end = time.time()
+        print("run decoder")
+        print((end - start) * 1000)
+
+        if not self.model.generator_frozen:
+            self.model.generator = torch.jit.trace(self.model.generator, dec_out.squeeze(1))
+            self.model.generator = torch.jit.freeze(self.model.generator)
+            torch.jit.save(self.model.generator, "generator.pt")
+            self.model.generator_frozen = True
 
         # Generator forward.
         if not self.copy_attn:
-            if "std" in dec_attn:
-                attn = dec_attn["std"]
-            else:
-                attn = None
+            #if "std" in dec_attn:
+            attn = dec_attn
+            #else:
+            #    attn = None
+            start = time.time()
 
             scores = self.model.generator(dec_out.squeeze(1))
             log_probs = F.log_softmax(scores.to(torch.float32), dim=-1)
+
+            end = time.time()
+            print("generator")
+            print((end - start) * 1000)
             # returns [(batch_size x beam_size) , vocab ] when 1 step
             # or [batch_size, tgt_len, vocab ] when full sentence
         else:
@@ -736,9 +809,21 @@ class Translator(Inference):
         src_len = batch['srclen']
         batch_size = len(batch['srclen'])
 
+        if not self.model.encoder_frozen:
+            self.model.encoder = torch.jit.trace(self.model.encoder, (src, src_len))
+            self.model.encoder = torch.jit.freeze(self.model.encoder)
+            torch.jit.save(self.model.encoder, "encoder.pt")
+            self.model.encoder_frozen = True
+
+        start = time.time()
+
         enc_out, enc_final_hs, src_len = self.model.encoder(
             src, src_len
         )
+
+        end = time.time()
+        print("encoder")
+        print((end - start) * 1000)
 
         if src_len is None:
             assert not isinstance(
@@ -773,8 +858,12 @@ class Translator(Inference):
 
         # (1) Run the encoder on the src.
         src, enc_final_hs, enc_out, src_len = self._run_encoder(batch)
-
-        self.model.decoder.init_state(src, enc_out, enc_final_hs)
+        print(src)
+        #self.model.decoder.init_state(src, enc_out, enc_final_hs)
+        cached_self_attn_keys = [torch.tensor([]) for layer in self.model.decoder.transformer_layers]
+        cached_self_attn_values = [torch.tensor([]) for layer in self.model.decoder.transformer_layers]
+        cached_context_attn_keys = [torch.tensor([]) for layer in self.model.decoder.transformer_layers]
+        cached_context_attn_values = [torch.tensor([]) for layer in self.model.decoder.transformer_layers]
 
         gold_score = self._gold_score(
             batch,
@@ -799,7 +888,7 @@ class Translator(Inference):
         )
 
         if fn_map_state is not None:
-            self.model.decoder.map_state(fn_map_state)
+            src = self.map_state(src, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, fn_map_state)
 
         # (3) Begin decoding step by step:
         for step in range(decode_strategy.max_length):
@@ -807,15 +896,30 @@ class Translator(Inference):
             #                                                          1)
             decoder_input = decode_strategy.current_predictions.view(-1, 1, 1)
 
+            start = time.time()
+
             log_probs, attn = self._decode_and_generate(
                 decoder_input,
                 enc_out,
                 batch,
-                src_len=src_len_tiled,
+                src_len_tiled,
+                cached_self_attn_keys,
+                cached_self_attn_values,
+                cached_context_attn_keys,
+                cached_context_attn_values,
+                src,
                 src_map=src_map,
                 step=step,
                 batch_offset=decode_strategy.batch_offset,
+
             )
+
+            end = time.time()
+            print("whole decoder")
+            print((end - start) * 1000)
+
+            print("log probs")
+            print(log_probs, attn)
 
             decode_strategy.advance(log_probs, attn)
             any_finished = decode_strategy.is_finished.any()
@@ -825,6 +929,9 @@ class Translator(Inference):
                     break
 
             select_indices = decode_strategy.select_indices
+
+            print("select_indices")
+            print(select_indices)
 
             if any_finished:
                 # Reorder states.
@@ -841,7 +948,7 @@ class Translator(Inference):
                     src_map = src_map.index_select(0, select_indices)
 
             if parallel_paths > 1 or any_finished:
-                self.model.decoder.map_state(
+                src = self.map_state(src, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values,
                     lambda state, dim: state.index_select(dim, select_indices)
                 )
 

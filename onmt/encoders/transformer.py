@@ -3,6 +3,7 @@ Implementation of "Attention is All You Need"
 """
 
 import torch.nn as nn
+import torch
 
 from onmt.encoders.encoder import EncoderBase
 from onmt.modules import MultiHeadedAttention
@@ -35,7 +36,7 @@ class TransformerEncoderLayer(nn.Module):
         self.self_attn = MultiHeadedAttention(
             heads, d_model, dropout=attention_dropout,
             max_relative_positions=max_relative_positions,
-            attn_type="self", add_qkvbias=add_qkvbias)
+            attn_type="self", add_qkvbias=add_qkvbias, inference=False)
         self.feed_forward = PositionwiseFeedForward(d_model, d_ff, dropout,
                                                     pos_ffn_activation_fn)
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
@@ -133,7 +134,7 @@ class TransformerEncoder(EncoderBase):
             enc_out = layer(enc_out, mask)
         enc_out = self.layer_norm(enc_out)
 
-        return enc_out, None, src_len
+        return enc_out, torch.tensor([]), src_len
 
     def update_dropout(self, dropout, attention_dropout):
         self.embeddings.update_dropout(dropout)
