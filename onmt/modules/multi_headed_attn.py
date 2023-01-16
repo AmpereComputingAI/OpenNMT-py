@@ -178,16 +178,24 @@ class MultiHeadedAttention(nn.Module):
                 key = shape(key, self.dim_per_head)
                 value = shape(value, self.dim_per_head)
                 if self.layer_cache[1]['keys'].numel() != 0:
+                    #print("keys")
+                    #print(self.layer_cache[1]['keys'], key)
                     key = torch.cat(
                         (self.layer_cache[1]['keys'], key),
                         dim=2)
 
                 if self.layer_cache[1]['values'].numel() != 0:
+                    #print("values")
+                    #print(self.layer_cache[1]['values'], key)
                     value = torch.cat(
                         (self.layer_cache[1]['values'], value),
                         dim=2)
                 self.layer_cache[1]['keys'] = key
                 self.layer_cache[1]['values'] = value
+
+                #print("after")
+                #print(key, value)
+
             elif self.attn_type == "context":
                 query = self.linear_query(query)
                 if self.layer_cache[1]['keys'].numel() == 0:

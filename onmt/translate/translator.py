@@ -346,6 +346,7 @@ class Inference(object):
 
         for batch in infer_iter:
 
+            start = time.time()
             batch_data = self.translate_batch(
                 batch, attn_debug
             )
@@ -432,6 +433,9 @@ class Inference(object):
                         self.logger.info(output)
                     else:
                         os.write(1, output.encode("utf-8"))
+            
+            end = time.time()
+            print("inference")            
 
         end_time = time.time()
 
@@ -540,9 +544,21 @@ class Inference(object):
         # in case of inference tgt_len = 1, batch = beam times batch_size
         # in case of Gold Scoring tgt_len = actual length, batch = 1 batch
 
+        start = time.time()
+
         dec_out, dec_attn = self.model.decoder(
             decoder_in, enc_out, src_len=src_len, step=step
         )
+
+        end = time.time()
+        print("run decoder")
+        print((end - start) * 1000)
+
+        if not self.model.generator_frozen:
+            self.model.generator = torch.jit.trace(self.model.generator, dec_out.squeeze(1))
+            self.model.generator = torch.jit.freeze(self.model.generator)
+            torch.jit.save(self.model.generator, "generator.pt")
+            self.model.generator_frozen = True
 
         # Generator forward.
         if not self.copy_attn:
@@ -551,12 +567,18 @@ class Inference(object):
             else:
                 attn = None
 
+            start = time.time()
             scores = self.model.generator(dec_out.squeeze(1))
             log_probs = F.log_softmax(scores.to(torch.float32), dim=-1)
+
+            end = time.time()
+            print("generator")
+            print((end - start) * 1000)
             # returns [(batch_size x beam_size) , vocab ] when 1 step
             # or [batch_size, tgt_len, vocab ] when full sentence
         else:
             attn = dec_attn["copy"]
+
             scores = self.model.generator(
                 dec_out.view(-1, dec_out.size(2)),
                 attn.view(-1, attn.size(2)),
@@ -736,9 +758,21 @@ class Translator(Inference):
         src_len = batch['srclen']
         batch_size = len(batch['srclen'])
 
+        start = time.time()
+
+        if not self.model.encoder_frozen:
+            self.model.encoder = torch.jit.trace(self.model.encoder, (src, src_len))
+            self.model.encoder = torch.jit.freeze(self.model.encoder)
+            torch.jit.save(self.model.encoder, "encoder.pt")
+            self.model.encoder_frozen = True
+
         enc_out, enc_final_hs, src_len = self.model.encoder(
             src, src_len
         )
+
+        end = time.time()
+        print("encoder")
+        print((end - start) * 1000)
 
         if src_len is None:
             assert not isinstance(
@@ -750,7 +784,7 @@ class Translator(Inference):
                 .long()
                 .fill_(enc_out.size(1))
             )
-        return src, enc_final_hs, enc_out, src_len
+        return src, None, enc_out, src_len
 
     def _translate_batch_with_strategy(
         self, batch, decode_strategy
@@ -775,6 +809,7 @@ class Translator(Inference):
         src, enc_final_hs, enc_out, src_len = self._run_encoder(batch)
 
         self.model.decoder.init_state(src, enc_out, enc_final_hs)
+        print(src)
 
         gold_score = self._gold_score(
             batch,
@@ -807,6 +842,8 @@ class Translator(Inference):
             #                                                          1)
             decoder_input = decode_strategy.current_predictions.view(-1, 1, 1)
 
+            start = time.time()
+
             log_probs, attn = self._decode_and_generate(
                 decoder_input,
                 enc_out,
@@ -817,6 +854,13 @@ class Translator(Inference):
                 batch_offset=decode_strategy.batch_offset,
             )
 
+            print("log  probs")
+            print(log_probs, attn)
+
+            end = time.time()
+            print("whole decoder")
+            print((end - start) * 1000)
+
             decode_strategy.advance(log_probs, attn)
             any_finished = decode_strategy.is_finished.any()
             if any_finished:
@@ -825,6 +869,9 @@ class Translator(Inference):
                     break
 
             select_indices = decode_strategy.select_indices
+
+            print("select_indices")
+            print(select_indices)
 
             if any_finished:
                 # Reorder states.

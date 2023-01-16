@@ -56,6 +56,12 @@ class NMTModel(BaseModel):
         super(NMTModel, self).__init__(encoder, decoder)
         self.encoder = encoder
         self.decoder = decoder
+        self.encoder_frozen = False
+        self.decoder_frozen = False
+        self.generator_frozen = False
+        #self.encoder_frozen = True
+        #self.decoder_frozen = True
+        #self.generator_frozen = True
 
     def forward(self, src, tgt, src_len, bptt=False, with_align=False):
         """An NMTModel forward the src side to the encoder.

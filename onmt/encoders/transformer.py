@@ -3,6 +3,7 @@ Implementation of "Attention is All You Need"
 """
 
 import torch.nn as nn
+import torch
 
 from onmt.encoders.encoder import EncoderBase
 from onmt.modules import MultiHeadedAttention
@@ -133,7 +134,7 @@ class TransformerEncoder(EncoderBase):
             enc_out = layer(enc_out, mask)
         enc_out = self.layer_norm(enc_out)
 
-        return enc_out, None, src_len
+        return enc_out, torch.tensor([]), src_len
 
     def update_dropout(self, dropout, attention_dropout):
         self.embeddings.update_dropout(dropout)

@@ -324,14 +324,20 @@ class TransformerDecoderBase(DecoderBase):
         self.state["src"] = src
 
     def map_state(self, fn):
-
+        print("map state")
         if self.state["src"] is not None:
+            print("decoder state")
+            print(self.state["src"])
             self.state["src"] = fn(self.state["src"], 0)
+            print("after mapping")
+            print(self.state["src"])
         for layer in self.transformer_layers:
             if hasattr(layer, 'context_attn'):
                 if layer.context_attn.layer_cache[1]['keys'].numel() != 0:
                     x = fn(layer.context_attn.layer_cache[1]['keys'], 0)
                     y = fn(layer.context_attn.layer_cache[1]['values'], 0)
+                    print("context attn")
+                    print(x, y)
                     layer.context_attn.layer_cache = True, {'keys': x,
                                                             'values': y}
             if isinstance(layer.self_attn, AverageAttention):
@@ -342,6 +348,8 @@ class TransformerDecoderBase(DecoderBase):
                 if layer.self_attn.layer_cache[1]['keys'].numel() != 0:
                     x = fn(layer.self_attn.layer_cache[1]['keys'], 0)
                     y = fn(layer.self_attn.layer_cache[1]['values'], 0)
+                    print("attn")
+                    print(x, y)
                     layer.self_attn.layer_cache = True, {'keys': x,
                                                          'values': y}
 
