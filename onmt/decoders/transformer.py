@@ -324,20 +324,13 @@ class TransformerDecoderBase(DecoderBase):
         self.state["src"] = src
 
     def map_state(self, fn):
-        print("map state")
         if self.state["src"] is not None:
-            print("decoder state")
-            print(self.state["src"])
             self.state["src"] = fn(self.state["src"], 0)
-            print("after mapping")
-            print(self.state["src"])
         for layer in self.transformer_layers:
             if hasattr(layer, 'context_attn'):
                 if layer.context_attn.layer_cache[1]['keys'].numel() != 0:
                     x = fn(layer.context_attn.layer_cache[1]['keys'], 0)
                     y = fn(layer.context_attn.layer_cache[1]['values'], 0)
-                    print("context attn")
-                    print(x, y)
                     layer.context_attn.layer_cache = True, {'keys': x,
                                                             'values': y}
             if isinstance(layer.self_attn, AverageAttention):
@@ -348,8 +341,6 @@ class TransformerDecoderBase(DecoderBase):
                 if layer.self_attn.layer_cache[1]['keys'].numel() != 0:
                     x = fn(layer.self_attn.layer_cache[1]['keys'], 0)
                     y = fn(layer.self_attn.layer_cache[1]['values'], 0)
-                    print("attn")
-                    print(x, y)
                     layer.self_attn.layer_cache = True, {'keys': x,
                                                          'values': y}
 
@@ -437,7 +428,7 @@ class TransformerDecoder(TransformerDecoderBase):
     def detach_state(self):
         self.state["src"] = self.state["src"].detach()
 
-    def forward(self, tgt, enc_out=None, step=None, **kwargs):
+    def forward(self, tgt, src_len, enc_out=None, step=None, **kwargs):
         """
         Decode, possibly stepwise.
         when training step is always None, when decoding, step increases
@@ -456,9 +447,8 @@ class TransformerDecoder(TransformerDecoderBase):
         assert emb.dim() == 3  # len x batch x embedding_dim
 
         pad_idx = self.embeddings.word_padding_idx
-        src_lens = kwargs["src_len"]
         src_max_len = self.state["src"].shape[1]
-        src_pad_mask = ~sequence_mask(src_lens, src_max_len)  # [B x slen]
+        src_pad_mask = ~sequence_mask(src_len, src_max_len)  # [B x slen]
         src_pad_mask = src_pad_mask.unsqueeze(1)  # [B x 1 x slen]
         tgt_pad_mask = tgt_words.data.eq(pad_idx).unsqueeze(1)  # [B, 1, T_tgt]
 

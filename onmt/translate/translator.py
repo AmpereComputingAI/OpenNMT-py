@@ -547,7 +547,7 @@ class Inference(object):
         start = time.time()
 
         dec_out, dec_attn = self.model.decoder(
-            decoder_in, enc_out, src_len=src_len, step=step
+            decoder_in, src_len, enc_out, step=step
         )
 
         end = time.time()
