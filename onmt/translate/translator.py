@@ -525,32 +525,36 @@ class Inference(object):
         return msg
 
     def map_state(self, cached_state, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, fn):
-        print("cached state")
-        print(cached_state)
         if cached_state is not None:
             cached_state = fn(cached_state, 0)
         for tensor in cached_self_attn_keys:
             if tensor.numel() != 0:
                 tensor = fn(tensor, 0)
-                print("self attn key")
-                print(tensor)
         for tensor in cached_self_attn_values:
             if tensor.numel() != 0:
                 tensor = fn(tensor, 0)
-                print("self attn val")
-                print(tensor)
         for tensor in cached_context_attn_keys:
             if tensor.numel() != 0:
                 tensor = fn(tensor, 0)
-                print("ctx attn key")
-                print(tensor)
         for tensor in cached_context_attn_values:
             if tensor.numel() != 0:
                 tensor = fn(tensor, 0)
-                print("ctx attn val")
-                print(tensor)
 
         return cached_state
+
+    def _trace_decoder(self, decoder_in, src_len, enc_out, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, src):
+        orig_model = self.model.decoder
+        self.model.decoder = torch.jit.trace(self.model.decoder, (decoder_in, src_len, enc_out, torch.tensor(
+            [0]), cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, src))
+        self.model.decoder = torch.jit.freeze(self.model.decoder)
+        torch.jit.save(self.model.decoder, "decoder.pt")
+        _, _, cached_self_attn_keys_, cached_self_attn_values_, cached_context_attn_keys_, cached_context_attn_values_ = self.model.decoder(
+            decoder_in, src_len, enc_out, torch.tensor([0]), cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, src)
+        self.model.decoder_2 = torch.jit.trace(orig_model, (decoder_in, src_len, enc_out, torch.tensor(
+            [1]), cached_self_attn_keys_, cached_self_attn_values_, cached_context_attn_keys_, cached_context_attn_values_, src))
+        self.model.decoder_2 = torch.jit.freeze(self.model.decoder_2)
+        torch.jit.save(self.model.decoder_2, "decoder_2.pt")
+        self.model.decoder_frozen = True
 
     def _decode_and_generate(
         self,
@@ -558,9 +562,9 @@ class Inference(object):
         enc_out,
         batch,
         src_len,
-        cached_self_attn_keys, 
-        cached_self_attn_values, 
-        cached_context_attn_keys, 
+        cached_self_attn_keys,
+        cached_self_attn_values,
+        cached_context_attn_keys,
         cached_context_attn_values,
         src,
         src_map=None,
@@ -578,45 +582,47 @@ class Inference(object):
         # in case of inference tgt_len = 1, batch = beam times batch_size
         # in case of Gold Scoring tgt_len = actual length, batch = 1 batch
 
-        #if not self.model.decoder_frozen:
-        #   self.model.decoder = torch.jit.trace(self.model.decoder, (decoder_in, src_len, enc_out, torch.tensor([step]), cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, src))
-        #   self.model.decoder = torch.jit.freeze(self.model.decoder)
-        #   torch.jit.save(self.model.decoder, "decoder.pt")
-        #   self.model.decoder_frozen = True
-
+        if not self.model.decoder_frozen:
+            self._trace_decoder(decoder_in, src_len, enc_out, cached_self_attn_keys,
+                                cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, src)
 
         start = time.time()
 
-        print("cached tensors")
-        print(cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values)
-
-        dec_out, dec_attn = self.model.decoder(
-            decoder_in, src_len, enc_out, torch.tensor([step]),
-            cached_self_attn_keys,
-            cached_self_attn_values,
-            cached_context_attn_keys,
-            cached_context_attn_values,
-            cached_state=src
-        )
-
-        print("cached")
-        print(cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values)
+        if self.model.decoder_frozen and step > 0:
+            dec_out, dec_attn, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values = self.model.decoder_2(
+                decoder_in, src_len, enc_out, torch.tensor([step]),
+                cached_self_attn_keys,
+                cached_self_attn_values,
+                cached_context_attn_keys,
+                cached_context_attn_values,
+                cached_state=src
+            )
+        else:
+            dec_out, dec_attn, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values = self.model.decoder(
+                decoder_in, src_len, enc_out, torch.tensor([step]),
+                cached_self_attn_keys,
+                cached_self_attn_values,
+                cached_context_attn_keys,
+                cached_context_attn_values,
+                cached_state=src
+            )
 
         end = time.time()
         print("run decoder")
         print((end - start) * 1000)
 
         if not self.model.generator_frozen:
-            self.model.generator = torch.jit.trace(self.model.generator, dec_out.squeeze(1))
+            self.model.generator = torch.jit.trace(
+                self.model.generator, dec_out.squeeze(1))
             self.model.generator = torch.jit.freeze(self.model.generator)
             torch.jit.save(self.model.generator, "generator.pt")
             self.model.generator_frozen = True
 
         # Generator forward.
         if not self.copy_attn:
-            #if "std" in dec_attn:
+            # if "std" in dec_attn:
             attn = dec_attn
-            #else:
+            # else:
             #    attn = None
             start = time.time()
 
@@ -654,7 +660,7 @@ class Inference(object):
             log_probs = scores.squeeze(0).log()
             # returns [(batch_size x beam_size) , vocab ] when 1 step
             # or [batch_size, tgt_len, vocab ] when full sentence
-        return log_probs, attn
+        return log_probs, attn, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values
 
     def translate_batch(self, batch, attn_debug):
         """Translate a batch of sentences."""
@@ -810,7 +816,8 @@ class Translator(Inference):
         batch_size = len(batch['srclen'])
 
         if not self.model.encoder_frozen:
-            self.model.encoder = torch.jit.trace(self.model.encoder, (src, src_len))
+            self.model.encoder = torch.jit.trace(
+                self.model.encoder, (src, src_len))
             self.model.encoder = torch.jit.freeze(self.model.encoder)
             torch.jit.save(self.model.encoder, "encoder.pt")
             self.model.encoder_frozen = True
@@ -860,10 +867,10 @@ class Translator(Inference):
         src, enc_final_hs, enc_out, src_len = self._run_encoder(batch)
         print(src)
         #self.model.decoder.init_state(src, enc_out, enc_final_hs)
-        cached_self_attn_keys = [torch.tensor([]) for layer in self.model.decoder.transformer_layers]
-        cached_self_attn_values = [torch.tensor([]) for layer in self.model.decoder.transformer_layers]
-        cached_context_attn_keys = [torch.tensor([]) for layer in self.model.decoder.transformer_layers]
-        cached_context_attn_values = [torch.tensor([]) for layer in self.model.decoder.transformer_layers]
+        cached_self_attn_keys = [torch.tensor([]) for _ in range(6)]
+        cached_self_attn_values = [torch.tensor([]) for _ in range(6)]
+        cached_context_attn_keys = [torch.tensor([]) for _ in range(6)]
+        cached_context_attn_values = [torch.tensor([]) for _ in range(6)]
 
         gold_score = self._gold_score(
             batch,
@@ -888,7 +895,8 @@ class Translator(Inference):
         )
 
         if fn_map_state is not None:
-            src = self.map_state(src, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values, fn_map_state)
+            src = self.map_state(src, cached_self_attn_keys, cached_self_attn_values,
+                                 cached_context_attn_keys, cached_context_attn_values, fn_map_state)
 
         # (3) Begin decoding step by step:
         for step in range(decode_strategy.max_length):
@@ -898,7 +906,7 @@ class Translator(Inference):
 
             start = time.time()
 
-            log_probs, attn = self._decode_and_generate(
+            log_probs, attn, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values = self._decode_and_generate(
                 decoder_input,
                 enc_out,
                 batch,
@@ -949,8 +957,9 @@ class Translator(Inference):
 
             if parallel_paths > 1 or any_finished:
                 src = self.map_state(src, cached_self_attn_keys, cached_self_attn_values, cached_context_attn_keys, cached_context_attn_values,
-                    lambda state, dim: state.index_select(dim, select_indices)
-                )
+                                     lambda state, dim: state.index_select(
+                                         dim, select_indices)
+                                     )
 
         return self.report_results(
             gold_score,

@@ -149,7 +149,7 @@ class MultiHeadedAttention(nn.Module):
     def forward(self, key: Tensor, value: Tensor,
                 query: Tensor, mask: Optional[Tensor] = None, 
                 cached_keys: Optional[Tensor] = None, cached_values: Optional[Tensor] = None
-                ) -> Tuple[Tensor, Tensor]:
+                ) -> Tuple[Tensor, Tensor, Optional[Tensor], Optional[Tensor]]:
         """
         Compute the context vector and the attention vectors.
 
@@ -176,22 +176,11 @@ class MultiHeadedAttention(nn.Module):
                                     self.linear_values(query)
                 key = shape(key, self.dim_per_head)
                 value = shape(value, self.dim_per_head)
-                #print("key")
-                #print(cached_keys, key)
-                #print("value")
-                #print(cached_values, value)
-
                 key = torch.cat((cached_keys, key), dim=2)
                 value = torch.cat((cached_values, value), dim=2)
-                #cached_keys = key
-                #cached_values = value
-                cached_keys.resize_(key.shape)
-                cached_keys.copy_(key)
-                cached_values.resize_(value.shape)
-                cached_values.copy_(value)
+                cached_keys = key
+                cached_values = value
 
-                #print("after")
-                #print(key, value)
             elif self.attn_type == "context":
                 query = self.linear_query(query)
                 if cached_keys.numel() == 0:
@@ -199,20 +188,16 @@ class MultiHeadedAttention(nn.Module):
                                  self.linear_values(value)
                     key = shape(key, self.dim_per_head)
                     value = shape(value, self.dim_per_head)
-                    cached_keys.resize_(key.shape)
-                    cached_keys.copy_(key)
-                    cached_values.resize_(value.shape)
-                    cached_values.copy_(value)
+                    cached_keys = key
+                    cached_values = value
                 else:
                     key, value = cached_keys, cached_values
-
         else:
             key = self.linear_keys(key)
             value = self.linear_values(value)
             query = self.linear_query(query)
             key = shape(key, self.dim_per_head)
             value = shape(value, self.dim_per_head)
-
 
         query = shape(query, self.dim_per_head)
 
@@ -261,4 +246,4 @@ class MultiHeadedAttention(nn.Module):
 
         output = self.final_linear(context)
 
-        return output, attn
+        return output, attn, cached_keys, cached_values
