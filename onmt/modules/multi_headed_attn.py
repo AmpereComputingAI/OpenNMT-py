@@ -253,6 +253,10 @@ class MultiHeadedAttention(nn.Module):
         else:
             context = unshape(context_original)
 
+        torch.set_printoptions(threshold=100000, profile='full')
+        print("context")
+        print(context)
+        torch.set_printoptions(profile='default')
         output = self.final_linear(context)
 
         return output, attn

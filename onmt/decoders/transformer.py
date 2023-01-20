@@ -324,9 +324,19 @@ class TransformerDecoderBase(DecoderBase):
         self.state["src"] = src
 
     def map_state(self, fn):
+        torch.set_printoptions(threshold=100000, profile='full')
         if self.state["src"] is not None:
             self.state["src"] = fn(self.state["src"], 0)
         for layer in self.transformer_layers:
+            print("before map keys")
+            print(layer.self_attn.layer_cache[1]['keys'].shape)
+            print(layer.self_attn.layer_cache[1]['keys'])
+            #print("before map values")
+            #print(layer.self_attn.layer_cache[1]['values'])
+            #print("before map ctx keys")
+            #print(layer.context_attn.layer_cache[1]['keys'])
+            #print("before map ctx values")
+            #print(layer.context_attn.layer_cache[1]['values'])
             if hasattr(layer, 'context_attn'):
                 if layer.context_attn.layer_cache[1]['keys'].numel() != 0:
                     x = fn(layer.context_attn.layer_cache[1]['keys'], 0)
@@ -343,6 +353,16 @@ class TransformerDecoderBase(DecoderBase):
                     y = fn(layer.self_attn.layer_cache[1]['values'], 0)
                     layer.self_attn.layer_cache = True, {'keys': x,
                                                          'values': y}
+            print("after map keys")
+            print(layer.self_attn.layer_cache[1]['keys'].shape)
+            print(layer.self_attn.layer_cache[1]['keys'])
+            #print("after map values")
+            #print(layer.self_attn.layer_cache[1]['values'])
+            #print("after map ctx keys")
+            #print(layer.context_attn.layer_cache[1]['keys'])
+            #print("after map ctx values")
+            #print(layer.context_attn.layer_cache[1]['values'])
+        torch.set_printoptions(profile='default')
 
     def detach_state(self):
         raise NotImplementedError
@@ -456,6 +476,11 @@ class TransformerDecoder(TransformerDecoderBase):
         attn_aligns = []
 
         for layer in self.transformer_layers:
+            torch.set_printoptions(threshold=100000, profile='full')
+            print("decoder forward")
+            print(layer.self_attn.layer_cache[1]['keys'].shape)
+            print(layer.self_attn.layer_cache[1]['keys'])
+            torch.set_printoptions(profile='default')
             dec_out, attn, attn_align = layer(
                 dec_out,
                 enc_out,
