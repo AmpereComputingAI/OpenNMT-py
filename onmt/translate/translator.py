@@ -523,12 +523,31 @@ class Inference(object):
             )
         return msg
 
+    def map_state(self, cache, fn):
+        if self.model.decoder.state["src"] is not None:
+            self.model.decoder.state["src"] = fn(self.model.decoder.state["src"], 0)
+        #if cached_state is not None:
+        #    cached_state = fn(cached_state, 0)
+        for idx in range(len(cache)):
+            key, val, ctx_key, ctx_val = cache[idx]
+            if key.numel() != 0:
+                key = fn(key, 0)
+            if val.numel() != 0:
+                val = fn(val, 0)
+            if ctx_key.numel() != 0:
+                ctx_key = fn(ctx_key, 0)
+            if ctx_val.numel() != 0:
+                ctx_val = fn(ctx_val, 0)
+            cache[idx] = (key, val, ctx_key, ctx_val)
+        return cache
+
     def _decode_and_generate(
         self,
         decoder_in,
         enc_out,
         batch,
         src_len,
+        cache,
         src_map=None,
         step=None,
         batch_offset=None,
@@ -546,8 +565,8 @@ class Inference(object):
 
         start = time.time()
 
-        dec_out, dec_attn = self.model.decoder(
-            decoder_in, src_len, enc_out, step=step
+        dec_out, dec_attn, next_cache = self.model.decoder(
+            decoder_in, src_len, enc_out, step=step, cache=cache
         )
 
         end = time.time()
@@ -603,7 +622,7 @@ class Inference(object):
             log_probs = scores.squeeze(0).log()
             # returns [(batch_size x beam_size) , vocab ] when 1 step
             # or [batch_size, tgt_len, vocab ] when full sentence
-        return log_probs, attn
+        return log_probs, attn, next_cache
 
     def translate_batch(self, batch, attn_debug):
         """Translate a batch of sentences."""
@@ -810,6 +829,7 @@ class Translator(Inference):
 
         self.model.decoder.init_state(src, enc_out, enc_final_hs)
         print(src)
+        cache = [(torch.tensor([]), torch.tensor([]), torch.tensor([]), torch.tensor([])) for _ in range(6)]
 
         gold_score = self._gold_score(
             batch,
@@ -834,7 +854,7 @@ class Translator(Inference):
         )
 
         if fn_map_state is not None:
-            self.model.decoder.map_state(fn_map_state)
+            cache = self.map_state(cache, fn_map_state)
 
         # (3) Begin decoding step by step:
         for step in range(decode_strategy.max_length):
@@ -844,11 +864,12 @@ class Translator(Inference):
 
             start = time.time()
 
-            log_probs, attn = self._decode_and_generate(
+            log_probs, attn, cache = self._decode_and_generate(
                 decoder_input,
                 enc_out,
                 batch,
-                src_len=src_len_tiled,
+                src_len_tiled,
+                cache,
                 src_map=src_map,
                 step=step,
                 batch_offset=decode_strategy.batch_offset,
@@ -888,7 +909,7 @@ class Translator(Inference):
                     src_map = src_map.index_select(0, select_indices)
 
             if parallel_paths > 1 or any_finished:
-                self.model.decoder.map_state(
+                cache = self.map_state(cache,
                     lambda state, dim: state.index_select(dim, select_indices)
                 )
 

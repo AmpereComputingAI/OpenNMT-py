@@ -149,8 +149,9 @@ class MultiHeadedAttention(nn.Module):
 
     # @torch.jit.script_method
     def forward(self, key: Tensor, value: Tensor,
-                query: Tensor, mask: Optional[Tensor] = None
-                ) -> Tuple[Tensor, Tensor]:
+                query: Tensor, mask: Optional[Tensor] = None,
+                cache: Tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor], Optional[Tensor]] = None
+                ) -> Tuple[Tensor, Tensor, Tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor], Optional[Tensor]]]:
         """
         Compute the context vector and the attention vectors.
 
@@ -171,6 +172,7 @@ class MultiHeadedAttention(nn.Module):
         """
         # 1) Project key, value, and query.
         # as a reminder at training layer_cache[0] remains False
+        next_cache = None
         if self.inference:
             if self.attn_type == "self":
                 query, key, value = self.linear_query(query),\
@@ -178,29 +180,19 @@ class MultiHeadedAttention(nn.Module):
                     self.linear_values(query)
                 key = shape(key, self.dim_per_head)
                 value = shape(value, self.dim_per_head)
-                if self.layer_cache[1]['keys'].numel() != 0:
-                    key = torch.cat(
-                        (self.layer_cache[1]['keys'], key),
-                        dim=2)
-
-                if self.layer_cache[1]['values'].numel() != 0:
-                    value = torch.cat(
-                        (self.layer_cache[1]['values'], value),
-                        dim=2)
-                self.layer_cache[1]['keys'] = key
-                self.layer_cache[1]['values'] = value
+                key = torch.cat((cache[0], key), dim=2)
+                value = torch.cat((cache[1], value), dim=2)
+                next_cache = (key, value, cache[2], cache[3])
             elif self.attn_type == "context":
                 query = self.linear_query(query)
-                if self.layer_cache[1]['keys'].numel() == 0:
+                if cache[2].numel() == 0:
                     key, value = self.linear_keys(key),\
                         self.linear_values(value)
                     key = shape(key, self.dim_per_head)
                     value = shape(value, self.dim_per_head)
                 else:
-                    key, value = self.layer_cache[1]['keys'],\
-                        self.layer_cache[1]['values']
-                self.layer_cache[1]['keys'] = key
-                self.layer_cache[1]['values'] = value
+                    key, value = cache[2], cache[3]
+                next_cache = (cache[0], cache[1], key, value)
         else:
             key = self.linear_keys(key)
             value = self.linear_values(value)
@@ -220,7 +212,7 @@ class MultiHeadedAttention(nn.Module):
             # 1 or key_len x key_len
             relative_positions_matrix = gen_relative_positions(
                 key_len, self.max_relative_positions,
-                cache=self.layer_cache[0],
+                cache=self.inference,
                 device=key.device)
             #  1 or key_len x key_len x dim_per_head
             relations_keys = self.relative_positions_embeddings(
@@ -255,4 +247,4 @@ class MultiHeadedAttention(nn.Module):
 
         output = self.final_linear(context)
 
-        return output, attn
+        return output, attn, next_cache

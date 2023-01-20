@@ -53,7 +53,7 @@ class TransformerEncoderLayer(nn.Module):
             * layer_out ``(batch_size, src_len, model_dim)``
         """
         input_norm = self.layer_norm(layer_in)
-        context, _ = self.self_attn(input_norm, input_norm, input_norm,
+        context, _, _ = self.self_attn(input_norm, input_norm, input_norm,
                                     mask=mask)
         layer_out = self.dropout(context) + layer_in
         layer_out = self.feed_forward(layer_out)
