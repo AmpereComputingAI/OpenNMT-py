@@ -433,9 +433,9 @@ class Inference(object):
                         self.logger.info(output)
                     else:
                         os.write(1, output.encode("utf-8"))
-            
+
             end = time.time()
-            print("inference")            
+            print("inference")
 
         end_time = time.time()
 
@@ -523,11 +523,12 @@ class Inference(object):
             )
         return msg
 
-    def map_state(self, cache, fn):
+    def map_state(self, state, cache, fn):
         if self.model.decoder.state["src"] is not None:
-            self.model.decoder.state["src"] = fn(self.model.decoder.state["src"], 0)
-        #if cached_state is not None:
-        #    cached_state = fn(cached_state, 0)
+            self.model.decoder.state["src"] = fn(
+                self.model.decoder.state["src"], 0)
+        if state is not None:
+            state = fn(state, 0)
         for idx in range(len(cache)):
             key, val, ctx_key, ctx_val = cache[idx]
             if key.numel() != 0:
@@ -539,7 +540,22 @@ class Inference(object):
             if ctx_val.numel() != 0:
                 ctx_val = fn(ctx_val, 0)
             cache[idx] = (key, val, ctx_key, ctx_val)
-        return cache
+
+        return state
+
+    def _trace_decoder(self, decoder_in, src_len, enc_out, cache, src):
+        orig_model = self.model.decoder
+        self.model.decoder = torch.jit.trace(
+            self.model.decoder, (decoder_in, src_len, enc_out, torch.tensor([0]), cache, src))
+        self.model.decoder = torch.jit.freeze(self.model.decoder)
+        torch.jit.save(self.model.decoder, "decoder.pt")
+        _, _, cache_ = self.model.decoder(
+            decoder_in, src_len, enc_out, torch.tensor([0]), cache, src)
+        self.model.decoder_2 = torch.jit.trace(
+            orig_model, (decoder_in, src_len, enc_out, torch.tensor([1]), cache_, src))
+        self.model.decoder_2 = torch.jit.freeze(self.model.decoder_2)
+        torch.jit.save(self.model.decoder_2, "decoder_2.pt")
+        self.model.decoder_frozen = True
 
     def _decode_and_generate(
         self,
@@ -548,6 +564,7 @@ class Inference(object):
         batch,
         src_len,
         cache,
+        src,
         src_map=None,
         step=None,
         batch_offset=None,
@@ -563,18 +580,25 @@ class Inference(object):
         # in case of inference tgt_len = 1, batch = beam times batch_size
         # in case of Gold Scoring tgt_len = actual length, batch = 1 batch
 
+        if not self.model.decoder_frozen:
+            self._trace_decoder(decoder_in, src_len, enc_out, cache, src)
+
         start = time.time()
 
-        dec_out, dec_attn, next_cache = self.model.decoder(
-            decoder_in, src_len, enc_out, step=step, cache=cache
-        )
+        if self.model.decoder_frozen and step > 0:
+            dec_out, dec_attn, cache = self.model.decoder_2(
+                decoder_in, src_len, enc_out, torch.tensor([step]), cache, state=src)
+        else:
+            dec_out, dec_attn, cache = self.model.decoder(
+                decoder_in, src_len, enc_out, torch.tensor([step]), cache, state=src)
 
         end = time.time()
         print("run decoder")
         print((end - start) * 1000)
 
         if not self.model.generator_frozen:
-            self.model.generator = torch.jit.trace(self.model.generator, dec_out.squeeze(1))
+            self.model.generator = torch.jit.trace(
+                self.model.generator, dec_out.squeeze(1))
             self.model.generator = torch.jit.freeze(self.model.generator)
             torch.jit.save(self.model.generator, "generator.pt")
             self.model.generator_frozen = True
@@ -780,7 +804,8 @@ class Translator(Inference):
         start = time.time()
 
         if not self.model.encoder_frozen:
-            self.model.encoder = torch.jit.trace(self.model.encoder, (src, src_len))
+            self.model.encoder = torch.jit.trace(
+                self.model.encoder, (src, src_len))
             self.model.encoder = torch.jit.freeze(self.model.encoder)
             torch.jit.save(self.model.encoder, "encoder.pt")
             self.model.encoder_frozen = True
@@ -829,7 +854,8 @@ class Translator(Inference):
 
         self.model.decoder.init_state(src, enc_out, enc_final_hs)
         print(src)
-        cache = [(torch.tensor([]), torch.tensor([]), torch.tensor([]), torch.tensor([])) for _ in range(6)]
+        cache = [(torch.tensor([]), torch.tensor([]), torch.tensor(
+            []), torch.tensor([])) for _ in range(6)]
 
         gold_score = self._gold_score(
             batch,
@@ -854,7 +880,7 @@ class Translator(Inference):
         )
 
         if fn_map_state is not None:
-            cache = self.map_state(cache, fn_map_state)
+            src = self.map_state(src, cache, fn_map_state)
 
         # (3) Begin decoding step by step:
         for step in range(decode_strategy.max_length):
@@ -870,6 +896,7 @@ class Translator(Inference):
                 batch,
                 src_len_tiled,
                 cache,
+                src,
                 src_map=src_map,
                 step=step,
                 batch_offset=decode_strategy.batch_offset,
@@ -909,9 +936,10 @@ class Translator(Inference):
                     src_map = src_map.index_select(0, select_indices)
 
             if parallel_paths > 1 or any_finished:
-                cache = self.map_state(cache,
-                    lambda state, dim: state.index_select(dim, select_indices)
-                )
+                src = self.map_state(src, cache,
+                                     lambda state, dim: state.index_select(
+                                         dim, select_indices)
+                                     )
 
         return self.report_results(
             gold_score,

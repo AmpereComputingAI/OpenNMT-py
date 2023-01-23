@@ -431,7 +431,7 @@ class TransformerDecoder(TransformerDecoderBase):
     def detach_state(self):
         self.state["src"] = self.state["src"].detach()
 
-    def forward(self, tgt, src_len, enc_out=None, step=None, cache=None, **kwargs):
+    def forward(self, tgt, src_len, enc_out=None, step=None, cache=None, state=None, **kwargs):
         """
         Decode, possibly stepwise.
         when training step is always None, when decoding, step increases
@@ -440,8 +440,7 @@ class TransformerDecoder(TransformerDecoderBase):
         """
         if enc_out is None:
             enc_out = self.embeddings(tgt)
-        if step == 0:
-            self._init_cache(enc_out)
+        step = step.item()
 
         tgt_words = tgt[:, :, 0]
 
@@ -450,7 +449,7 @@ class TransformerDecoder(TransformerDecoderBase):
         assert emb.dim() == 3  # len x batch x embedding_dim
 
         pad_idx = self.embeddings.word_padding_idx
-        src_max_len = self.state["src"].shape[1]
+        src_max_len = state.shape[1]
         src_pad_mask = ~sequence_mask(src_len, src_max_len)  # [B x slen]
         src_pad_mask = src_pad_mask.unsqueeze(1)  # [B x 1 x slen]
         tgt_pad_mask = tgt_words.data.eq(pad_idx).unsqueeze(1)  # [B, 1, T_tgt]
