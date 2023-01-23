@@ -523,39 +523,46 @@ class Inference(object):
             )
         return msg
 
-    def map_state(self, state, cache, fn):
-        if self.model.decoder.state["src"] is not None:
-            self.model.decoder.state["src"] = fn(
-                self.model.decoder.state["src"], 0)
+    def map_state(self, state, self_keys, self_values, ctx_keys, ctx_values, fn):
         if state is not None:
             state = fn(state, 0)
-        for idx in range(len(cache)):
-            key, val, ctx_key, ctx_val = cache[idx]
-            if key.numel() != 0:
-                key = fn(key, 0)
-            if val.numel() != 0:
-                val = fn(val, 0)
-            if ctx_key.numel() != 0:
-                ctx_key = fn(ctx_key, 0)
-            if ctx_val.numel() != 0:
-                ctx_val = fn(ctx_val, 0)
-            cache[idx] = (key, val, ctx_key, ctx_val)
+        for idx in range(len(self_keys)):
+            torch.set_printoptions(threshold=100000, profile='full')
+            print("before map keys")
+            print(self_keys[idx].shape)
+            print(self_keys[idx])
+            if self_keys[idx].numel() != 0:
+                self_keys[idx] = fn(self_keys[idx], 0)
+            print("after map keys")
+            print(self_keys[idx].shape)
+            print(self_keys[idx])
+            torch.set_printoptions(profile='default')
+        for idx in range(len(self_values)):
+            if self_values[idx].numel() != 0:
+                self_values[idx] = fn(self_values[idx], 0)
+        for idx in range(len(ctx_keys)):
+            if ctx_keys[idx].numel() != 0:
+                ctx_keys[idx] = fn(ctx_keys[idx], 0)
+        for idx in range(len(ctx_values)):
+            if ctx_values[idx].numel() != 0:
+                ctx_values[idx] = fn(ctx_values[idx], 0)
 
         return state
 
-    def _trace_decoder(self, decoder_in, src_len, enc_out, cache, src):
+    def _trace_decoder(self, decoder_in, src_len, enc_out, self_keys, self_values, ctx_keys, ctx_values, src):
+        self.model.frozen_decoder = torch.jit.trace(
+            self.model.decoder, (decoder_in, src_len, enc_out, torch.tensor([0]), self_keys, self_values, ctx_keys, ctx_values, src))
+        self.model.frozen_decoder = torch.jit.freeze(self.model.frozen_decoder)
+        torch.jit.save(self.model.frozen_decoder, "decoder.pt")
+        self.model.decoder_frozen = True
+
+    def _trace_decoder_2(self, decoder_in, src_len, enc_out, self_keys, self_values, ctx_keys, ctx_values, src):
         orig_model = self.model.decoder
-        self.model.decoder = torch.jit.trace(
-            self.model.decoder, (decoder_in, src_len, enc_out, torch.tensor([0]), cache, src))
-        self.model.decoder = torch.jit.freeze(self.model.decoder)
-        torch.jit.save(self.model.decoder, "decoder.pt")
-        _, _, cache_ = self.model.decoder(
-            decoder_in, src_len, enc_out, torch.tensor([0]), cache, src)
         self.model.decoder_2 = torch.jit.trace(
-            orig_model, (decoder_in, src_len, enc_out, torch.tensor([1]), cache_, src))
+            orig_model, (decoder_in, src_len, enc_out, torch.tensor([1]), self_keys, self_values, ctx_keys, ctx_values, src))
         self.model.decoder_2 = torch.jit.freeze(self.model.decoder_2)
         torch.jit.save(self.model.decoder_2, "decoder_2.pt")
-        self.model.decoder_frozen = True
+        self.model.decoder_frozen_2 = True
 
     def _decode_and_generate(
         self,
@@ -563,7 +570,7 @@ class Inference(object):
         enc_out,
         batch,
         src_len,
-        cache,
+        self_keys, self_values, ctx_keys, ctx_values,
         src,
         src_map=None,
         step=None,
@@ -580,17 +587,25 @@ class Inference(object):
         # in case of inference tgt_len = 1, batch = beam times batch_size
         # in case of Gold Scoring tgt_len = actual length, batch = 1 batch
 
-        if not self.model.decoder_frozen:
-            self._trace_decoder(decoder_in, src_len, enc_out, cache, src)
+        if not self.model.decoder_frozen and step == 0:
+            a, b, c, d = self_keys, self_values, ctx_keys, ctx_values
+            self._trace_decoder(decoder_in, src_len, enc_out, a, b, c, d, src)
+
+        if not self.model.decoder_frozen_2 and step > 0:
+            a, b, c, d = self_keys, self_values, ctx_keys, ctx_values
+            self._trace_decoder_2(decoder_in, src_len, enc_out, a, b, c, d, src)
 
         start = time.time()
 
-        if self.model.decoder_frozen and step > 0:
-            dec_out, dec_attn, cache = self.model.decoder_2(
-                decoder_in, src_len, enc_out, torch.tensor([step]), cache, state=src)
+        if self.model.decoder_frozen_2 and step > 0:
+            dec_out, dec_attn, self_keys, self_values, ctx_keys, ctx_values = self.model.decoder_2(
+                decoder_in, src_len, enc_out, torch.tensor([step]), self_keys, self_values, ctx_keys, ctx_values, state=src)
+        elif self.model.decoder_frozen and step == 0:
+            dec_out, dec_attn, self_keys, self_values, ctx_keys, ctx_values = self.model.frozen_decoder(
+                decoder_in, src_len, enc_out, torch.tensor([step]), self_keys, self_values, ctx_keys, ctx_values, state=src)
         else:
-            dec_out, dec_attn, cache = self.model.decoder(
-                decoder_in, src_len, enc_out, torch.tensor([step]), cache, state=src)
+            dec_out, dec_attn, self_keys, self_values, ctx_keys, ctx_values = self.model.decoder(
+                decoder_in, src_len, enc_out, torch.tensor([step]), self_keys, self_values, ctx_keys, ctx_values, state=src)
 
         end = time.time()
         print("run decoder")
@@ -605,10 +620,11 @@ class Inference(object):
 
         # Generator forward.
         if not self.copy_attn:
-            if "std" in dec_attn:
-                attn = dec_attn["std"]
-            else:
-                attn = None
+            #if "std" in dec_attn:
+            #    attn = dec_attn["std"]
+            #else:
+            #    attn = None
+            attn = dec_attn
 
             start = time.time()
             scores = self.model.generator(dec_out.squeeze(1))
@@ -646,7 +662,7 @@ class Inference(object):
             log_probs = scores.squeeze(0).log()
             # returns [(batch_size x beam_size) , vocab ] when 1 step
             # or [batch_size, tgt_len, vocab ] when full sentence
-        return log_probs, attn, next_cache
+        return log_probs, attn, self_keys, self_values, ctx_keys, ctx_values
 
     def translate_batch(self, batch, attn_debug):
         """Translate a batch of sentences."""
@@ -852,10 +868,13 @@ class Translator(Inference):
         # (1) Run the encoder on the src.
         src, enc_final_hs, enc_out, src_len = self._run_encoder(batch)
 
-        self.model.decoder.init_state(src, enc_out, enc_final_hs)
+        #self.model.decoder.init_state(src, enc_out, enc_final_hs)
         print(src)
-        cache = [(torch.tensor([]), torch.tensor([]), torch.tensor(
-            []), torch.tensor([])) for _ in range(6)]
+
+        self_keys = [torch.tensor([]) for _ in range(6)]
+        self_values = [torch.tensor([]) for _ in range(6)]
+        ctx_keys = [torch.tensor([]) for _ in range(6)]
+        ctx_values = [torch.tensor([]) for _ in range(6)]
 
         gold_score = self._gold_score(
             batch,
@@ -880,7 +899,7 @@ class Translator(Inference):
         )
 
         if fn_map_state is not None:
-            src = self.map_state(src, cache, fn_map_state)
+            src = self.map_state(src, self_keys, self_values, ctx_keys, ctx_values, fn_map_state)
 
         # (3) Begin decoding step by step:
         for step in range(decode_strategy.max_length):
@@ -890,12 +909,12 @@ class Translator(Inference):
 
             start = time.time()
 
-            log_probs, attn, cache = self._decode_and_generate(
+            log_probs, attn, self_keys, self_values, ctx_keys, ctx_values = self._decode_and_generate(
                 decoder_input,
                 enc_out,
                 batch,
                 src_len_tiled,
-                cache,
+                self_keys, self_values, ctx_keys, ctx_values,
                 src,
                 src_map=src_map,
                 step=step,
@@ -936,7 +955,7 @@ class Translator(Inference):
                     src_map = src_map.index_select(0, select_indices)
 
             if parallel_paths > 1 or any_finished:
-                src = self.map_state(src, cache,
+                src = self.map_state(src, self_keys, self_values, ctx_keys, ctx_values,
                                      lambda state, dim: state.index_select(
                                          dim, select_indices)
                                      )

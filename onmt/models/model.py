@@ -58,6 +58,7 @@ class NMTModel(BaseModel):
         self.decoder = decoder
         self.encoder_frozen = False
         self.decoder_frozen = False
+        self.decoder_frozen_2 = False
         self.generator_frozen = False
         #self.encoder_frozen = True
         #self.decoder_frozen = True

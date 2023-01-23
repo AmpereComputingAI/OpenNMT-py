@@ -150,8 +150,8 @@ class MultiHeadedAttention(nn.Module):
     # @torch.jit.script_method
     def forward(self, key: Tensor, value: Tensor,
                 query: Tensor, mask: Optional[Tensor] = None,
-                cache: Tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor], Optional[Tensor]] = None
-                ) -> Tuple[Tensor, Tensor, Tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor], Optional[Tensor]]]:
+                cached_keys: Optional[Tensor] = None, cached_values: Optional[Tensor] = None
+                ) -> Tuple[Tensor, Tensor, Optional[Tensor], Optional[Tensor]]:
         """
         Compute the context vector and the attention vectors.
 
@@ -172,7 +172,6 @@ class MultiHeadedAttention(nn.Module):
         """
         # 1) Project key, value, and query.
         # as a reminder at training layer_cache[0] remains False
-        next_cache = None
         if self.inference:
             if self.attn_type == "self":
                 query, key, value = self.linear_query(query),\
@@ -180,19 +179,21 @@ class MultiHeadedAttention(nn.Module):
                     self.linear_values(query)
                 key = shape(key, self.dim_per_head)
                 value = shape(value, self.dim_per_head)
-                key = torch.cat((cache[0], key), dim=2)
-                value = torch.cat((cache[1], value), dim=2)
-                next_cache = (key, value, cache[2], cache[3])
+                key = torch.cat((cached_keys, key), dim=2)
+                value = torch.cat((cached_values, value), dim=2)
+                cached_keys = key
+                cached_values = value
             elif self.attn_type == "context":
                 query = self.linear_query(query)
-                if cache[2].numel() == 0:
+                if cached_keys.numel() == 0:
                     key, value = self.linear_keys(key),\
                         self.linear_values(value)
                     key = shape(key, self.dim_per_head)
                     value = shape(value, self.dim_per_head)
+                    cached_keys = key
+                    cached_values = value
                 else:
-                    key, value = cache[2], cache[3]
-                next_cache = (cache[0], cache[1], key, value)
+                    key, value = cached_keys, cached_values
         else:
             key = self.linear_keys(key)
             value = self.linear_values(value)
@@ -247,4 +248,4 @@ class MultiHeadedAttention(nn.Module):
 
         output = self.final_linear(context)
 
-        return output, attn, next_cache
+        return output, attn, cached_keys, cached_values

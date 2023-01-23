@@ -100,7 +100,7 @@ class TransformerDecoderLayerBase(nn.Module):
             * attn_align ``(batch_size, T, src_len)`` or None
         """
         with_align = kwargs.pop("with_align", False)
-        layer_out, attns, cache = self._forward(*args, **kwargs)
+        layer_out, attns, cached_keys, cached_values, cached_ctx_keys, cached_ctx_values = self._forward(*args, **kwargs)
         top_attn = attns[:, 0, :, :].contiguous()
         attn_align = None
         if with_align:
@@ -115,7 +115,7 @@ class TransformerDecoderLayerBase(nn.Module):
             # Case 2: no full_context, 1 align heads -> guided align
             # Case 3: full_context, 1 align heads -> full cte guided align
             attn_align = attns.mean(dim=1)
-        return layer_out, top_attn, attn_align, cache
+        return layer_out, top_attn, attn_align, cached_keys, cached_values, cached_ctx_keys, cached_ctx_values
 
     def update_dropout(self, dropout, attention_dropout):
         self.self_attn.update_dropout(attention_dropout)
@@ -144,14 +144,15 @@ class TransformerDecoderLayerBase(nn.Module):
             dec_mask = tgt_pad_mask
         return dec_mask
 
-    def _forward_self_attn(self, layer_in_norm, dec_mask, step, cache):
+    def _forward_self_attn(self, layer_in_norm, dec_mask, step, self_keys, self_values):
         if self.self_attn_type == "scaled-dot":
             return self.self_attn(
                 layer_in_norm,
                 layer_in_norm,
                 layer_in_norm,
                 mask=dec_mask,
-                cache=cache
+                cached_keys=self_keys,
+                cached_values=self_values
             )
         elif self.self_attn_type == "average":
             return self.self_attn(
@@ -226,7 +227,10 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
         tgt_pad_mask,
         step=None,
         future=False,
-        cache=None
+        self_key=None,
+        self_value=None,
+        ctx_key=None,
+        ctx_value=None
     ):
         """A naive forward pass for transformer decoder.
 
@@ -261,24 +265,25 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
 
         layer_in_norm = self.layer_norm_1(layer_in)
 
-        query, _, next_cache = self._forward_self_attn(
-            layer_in_norm, dec_mask, step, cache
+        query, _, self_key, self_value = self._forward_self_attn(
+            layer_in_norm, dec_mask, step, self_key, self_value
         )
 
         query = self.drop(query) + layer_in
 
         query_norm = self.layer_norm_2(query)
 
-        mid, attns, next_cache = self.context_attn(
+        mid, attns, ctx_key, ctx_value = self.context_attn(
             enc_out,
             enc_out,
             query_norm,
             mask=src_pad_mask,
-            cache=next_cache
+            cached_keys=ctx_key,
+            cached_values=ctx_value
         )
         layer_out = self.feed_forward(self.drop(mid) + query)
 
-        return layer_out, attns, next_cache
+        return layer_out, attns, self_key, self_value, ctx_key, ctx_value
 
 
 class TransformerDecoderBase(DecoderBase):
@@ -431,7 +436,7 @@ class TransformerDecoder(TransformerDecoderBase):
     def detach_state(self):
         self.state["src"] = self.state["src"].detach()
 
-    def forward(self, tgt, src_len, enc_out=None, step=None, cache=None, state=None, **kwargs):
+    def forward(self, tgt, src_len, enc_out=None, step=None, prev_self_keys=None, prev_self_values=None, prev_ctx_keys=None, prev_ctx_values=None, state=None, **kwargs):
         """
         Decode, possibly stepwise.
         when training step is always None, when decoding, step increases
@@ -456,25 +461,37 @@ class TransformerDecoder(TransformerDecoderBase):
 
         with_align = kwargs.pop("with_align", False)
         attn_aligns = []
-        next_cache = []
+        self_keys = []
+        self_values = []
+        ctx_keys = []
+        ctx_values = []
 
         idx = 0
 
         for layer in self.transformer_layers:
-            dec_out, attn, attn_align, next_layer_cache = layer(
+            dec_out, attn, attn_align, self_key, self_value, ctx_key, ctx_value = layer(
                 dec_out,
                 enc_out,
                 src_pad_mask,
                 tgt_pad_mask,
                 step=step,
                 with_align=with_align,
-                cache=cache[idx]
+                self_key=prev_self_keys[idx],
+                self_value=prev_self_values[idx],
+                ctx_key=prev_ctx_keys[idx],
+                ctx_value=prev_ctx_values[idx]
             )
             idx = idx + 1
             if attn_align is not None:
                 attn_aligns.append(attn_align)
-            if next_layer_cache is not None:
-                next_cache.append(next_layer_cache)
+            if self_key is not None:
+                self_keys.append(self_key)
+            if self_value is not None:
+                self_values.append(self_value)
+            if ctx_key is not None:
+                ctx_keys.append(ctx_key)
+            if ctx_value is not None:
+                ctx_values.append(ctx_value)
 
         dec_out = self.layer_norm(dec_out)
 
@@ -486,7 +503,7 @@ class TransformerDecoder(TransformerDecoderBase):
             # attns["align"] = torch.stack(attn_aligns, 0).mean(0)  # All avg
 
         # TODO change the way attns is returned dict => list or tuple (onnx)
-        return dec_out, attns, next_cache
+        return dec_out, attn, self_keys, self_values, ctx_keys, ctx_values
 
     def _init_cache(self, enc_out):
 
