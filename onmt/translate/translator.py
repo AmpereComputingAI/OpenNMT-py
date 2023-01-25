@@ -8,6 +8,7 @@ from itertools import count, zip_longest
 
 import torch
 import torch.nn.functional as F
+from torch.autograd.profiler import profile
 from onmt.constants import DefaultTokens
 import onmt.model_builder
 import onmt.decoders.ensemble
@@ -347,9 +348,15 @@ class Inference(object):
         for batch in infer_iter:
 
             start = time.time()
-            batch_data = self.translate_batch(
-                batch, attn_debug
-            )
+
+            with profile() as profiler:
+                batch_data = self.translate_batch(
+                    batch, attn_debug
+                )
+
+            print(profiler.key_averages().table(sort_by='cpu_time_total', row_limit=50))
+            torch._C._aio_profiler_print()
+
             translations = xlation_builder.from_batch(batch_data)
 
             for trans in translations:
@@ -589,7 +596,7 @@ class Inference(object):
             a, b, c, d = self_keys, self_values, ctx_keys, ctx_values
             self._trace_decoder_2(decoder_in, src_len, enc_out, a, b, c, d, src)
 
-        start = time.time()
+        #start = time.time()
 
         if self.model.decoder_frozen_2 and step > 0:
             dec_out, dec_attn, self_keys, self_values, ctx_keys, ctx_values = self.model.decoder_2(
@@ -601,9 +608,9 @@ class Inference(object):
             dec_out, dec_attn, self_keys, self_values, ctx_keys, ctx_values = self.model.decoder(
                 decoder_in, src_len, enc_out, torch.tensor([step]), self_keys, self_values, ctx_keys, ctx_values, state=src)
 
-        end = time.time()
-        print("run decoder")
-        print((end - start) * 1000)
+        #end = time.time()
+        #print("run decoder")
+        #print((end - start) * 1000)
 
         if not self.model.generator_frozen:
             self.model.generator = torch.jit.trace(
@@ -620,13 +627,9 @@ class Inference(object):
             #    attn = None
             attn = dec_attn
 
-            start = time.time()
             scores = self.model.generator(dec_out.squeeze(1))
             log_probs = F.log_softmax(scores.to(torch.float32), dim=-1)
 
-            end = time.time()
-            print("generator")
-            print((end - start) * 1000)
             # returns [(batch_size x beam_size) , vocab ] when 1 step
             # or [batch_size, tgt_len, vocab ] when full sentence
         else:
