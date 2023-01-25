@@ -229,7 +229,11 @@ class MultiHeadedAttention(nn.Module):
             # not 100% necessary but expand to nb of heads
             mask = mask.expand(-1, self.head_count, -1, -1)
             # now mask and scores have the same shape
-            scores = scores.masked_fill(mask, -1e18)
+            if self.inference:
+                mask = mask.float() * -1e18
+                scores = scores + mask
+            else:
+                scores = scores.masked_fill(mask, -1e18)
 
         # 3) Apply attention dropout and compute context vectors.
         attn = self.softmax(scores)
