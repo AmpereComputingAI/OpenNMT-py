@@ -51,7 +51,7 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
         self.dim = dim
 
-    def forward(self, emb, step:int=None):
+    def forward(self, emb, step=None):
         """Embed inputs.
 
         Args:
@@ -62,7 +62,11 @@ class PositionalEncoding(nn.Module):
         """
         pe = self.pe.transpose(0, 1)  # (batch x len x dim)
         emb = emb * math.sqrt(self.dim)
-        step = step or 0
+
+        if step is None:
+            step = 0
+        else:
+            step.item()
         if pe.size(1) < step + emb.size(1):
             raise SequenceTooLongError(
                 f"Sequence is {emb.size(1) + step} but PositionalEncoding is"
@@ -249,7 +253,7 @@ class Embeddings(nn.Module):
             else:
                 self.word_lut.weight.data.copy_(pretrained)
 
-    def forward(self, source, step:int=None):
+    def forward(self, source, step=None):
         """Computes the embeddings for words and features.
 
         Args:
@@ -258,11 +262,10 @@ class Embeddings(nn.Module):
         Returns:
             FloatTensor: Word embeddings ``(batch, len, embedding_size)``
         """
-
         if self.position_encoding:
             for i, module in enumerate(self.make_embedding._modules.values()):
                 if i == len(self.make_embedding._modules.values()) - 1:
-                    source = module(source, step=step)
+                    source = module(source, step)
                 else:
                     source = module(source)
         else:

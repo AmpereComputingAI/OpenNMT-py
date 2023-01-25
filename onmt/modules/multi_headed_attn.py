@@ -222,7 +222,8 @@ class MultiHeadedAttention(nn.Module):
         else:
             scores = query_key
 
-        scores = scores.float()
+        if scores.dtype != torch.float:
+            scores = scores.float()
 
         if mask is not None:
             # not 100% necessary but expand to nb of heads
@@ -231,7 +232,9 @@ class MultiHeadedAttention(nn.Module):
             scores = scores.masked_fill(mask, -1e18)
 
         # 3) Apply attention dropout and compute context vectors.
-        attn = self.softmax(scores).to(query.dtype)
+        attn = self.softmax(scores)
+        if attn.dtype != query.dtype:
+            attn.to(query.dtype)
         drop_attn = self.dropout(attn)
 
         context_original = torch.matmul(drop_attn, value)

@@ -49,7 +49,7 @@ def check_path(path, exist_ok=False, log=print):
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
 
-def sequence_mask(lengths, max_len=None):
+def sequence_mask(lengths, max_len: int=None):
     """
     Creates a boolean mask from sequence lengths.
     """

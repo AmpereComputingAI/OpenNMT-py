@@ -5,6 +5,8 @@ subsequent transformer based architectures
 
 import torch
 import torch.nn as nn
+from torch import Tensor
+from typing import Optional, Tuple, List
 
 from onmt.decoders.decoder import DecoderBase
 from onmt.modules import MultiHeadedAttention, AverageAttention
@@ -221,16 +223,16 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
 
     def _forward(
         self,
-        layer_in,
-        enc_out,
-        src_pad_mask,
-        tgt_pad_mask,
-        step=None,
-        future=False,
-        self_key=None,
-        self_value=None,
-        ctx_key=None,
-        ctx_value=None
+        layer_in: Tensor,
+        enc_out: Tensor,
+        src_pad_mask: Tensor,
+        tgt_pad_mask: Tensor,
+        step: Tensor=None,
+        future: Tensor=False,
+        self_key: Optional[Tensor]=None,
+        self_value: Optional[Tensor]=None,
+        ctx_key: Optional[Tensor]=None,
+        ctx_value: Optional[Tensor]=None
     ):
         """A naive forward pass for transformer decoder.
 
@@ -253,6 +255,8 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
         """
         dec_mask = None
         src_pad_mask = src_pad_mask.unsqueeze(1)  # [B,1,1,slen]
+        step = step.item()
+        future = future.item()
 
         if layer_in.size(1) > 1:
             # masking is necessary when sequence length is greater than one
@@ -436,7 +440,17 @@ class TransformerDecoder(TransformerDecoderBase):
     def detach_state(self):
         self.state["src"] = self.state["src"].detach()
 
-    def forward(self, tgt, src_len, enc_out=None, step=None, prev_self_keys=None, prev_self_values=None, prev_ctx_keys=None, prev_ctx_values=None, state=None, **kwargs):
+    def forward(self,
+                tgt: Tensor,
+                src_len: Tensor,
+                enc_out: Tensor=None,
+                step: Tensor=None,
+                prev_self_keys: List[Tensor]=None,
+                prev_self_values: List[Tensor]=None,
+                prev_ctx_keys: List[Tensor]=None,
+                prev_ctx_values: List[Tensor]=None,
+                state=None,
+                **kwargs):
         """
         Decode, possibly stepwise.
         when training step is always None, when decoding, step increases
@@ -445,11 +459,11 @@ class TransformerDecoder(TransformerDecoderBase):
         """
         if enc_out is None:
             enc_out = self.embeddings(tgt)
-        step = step.item()
 
         tgt_words = tgt[:, :, 0]
 
-        emb = self.embeddings(tgt, step=step)
+        emb = self.embeddings(tgt, step)
+        step = step.item()
         dec_out = emb
         assert emb.dim() == 3  # len x batch x embedding_dim
 
@@ -474,12 +488,12 @@ class TransformerDecoder(TransformerDecoderBase):
                 enc_out,
                 src_pad_mask,
                 tgt_pad_mask,
-                step=step,
-                with_align=with_align,
-                self_key=prev_self_keys[idx],
-                self_value=prev_self_values[idx],
-                ctx_key=prev_ctx_keys[idx],
-                ctx_value=prev_ctx_values[idx]
+                torch.tensor(step),
+                torch.tensor(with_align),
+                prev_self_keys[idx],
+                prev_self_values[idx],
+                prev_ctx_keys[idx],
+                prev_ctx_values[idx]
             )
             idx = idx + 1
             if attn_align is not None:

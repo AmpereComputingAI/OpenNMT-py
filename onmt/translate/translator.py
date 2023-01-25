@@ -527,16 +527,8 @@ class Inference(object):
         if state is not None:
             state = fn(state, 0)
         for idx in range(len(self_keys)):
-            torch.set_printoptions(threshold=100000, profile='full')
-            print("before map keys")
-            print(self_keys[idx].shape)
-            print(self_keys[idx])
             if self_keys[idx].numel() != 0:
                 self_keys[idx] = fn(self_keys[idx], 0)
-            print("after map keys")
-            print(self_keys[idx].shape)
-            print(self_keys[idx])
-            torch.set_printoptions(profile='default')
         for idx in range(len(self_values)):
             if self_values[idx].numel() != 0:
                 self_values[idx] = fn(self_values[idx], 0)
@@ -550,16 +542,17 @@ class Inference(object):
         return state
 
     def _trace_decoder(self, decoder_in, src_len, enc_out, self_keys, self_values, ctx_keys, ctx_values, src):
+        import copy
+        orig_model = copy.deepcopy(self.model.decoder)
         self.model.frozen_decoder = torch.jit.trace(
-            self.model.decoder, (decoder_in, src_len, enc_out, torch.tensor([0]), self_keys, self_values, ctx_keys, ctx_values, src))
+            orig_model, (decoder_in, src_len, enc_out, torch.tensor([0]), self_keys, self_values, ctx_keys, ctx_values, src))
         self.model.frozen_decoder = torch.jit.freeze(self.model.frozen_decoder)
         torch.jit.save(self.model.frozen_decoder, "decoder.pt")
         self.model.decoder_frozen = True
 
     def _trace_decoder_2(self, decoder_in, src_len, enc_out, self_keys, self_values, ctx_keys, ctx_values, src):
-        orig_model = self.model.decoder
         self.model.decoder_2 = torch.jit.trace(
-            orig_model, (decoder_in, src_len, enc_out, torch.tensor([1]), self_keys, self_values, ctx_keys, ctx_values, src))
+            self.model.decoder, (decoder_in, src_len, enc_out, torch.tensor([1]), self_keys, self_values, ctx_keys, ctx_values, src))
         self.model.decoder_2 = torch.jit.freeze(self.model.decoder_2)
         torch.jit.save(self.model.decoder_2, "decoder_2.pt")
         self.model.decoder_frozen_2 = True
