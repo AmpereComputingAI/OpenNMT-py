@@ -436,6 +436,7 @@ class Inference(object):
 
             end = time.time()
             print("inference")
+            print((end - start) * 1000)
 
         end_time = time.time()
 
@@ -862,7 +863,6 @@ class Translator(Inference):
         src, enc_final_hs, enc_out, src_len = self._run_encoder(batch)
 
         #self.model.decoder.init_state(src, enc_out, enc_final_hs)
-        print(src)
 
         self_keys = [torch.tensor([]) for _ in range(6)]
         self_values = [torch.tensor([]) for _ in range(6)]
@@ -914,9 +914,6 @@ class Translator(Inference):
                 batch_offset=decode_strategy.batch_offset,
             )
 
-            print("log  probs")
-            print(log_probs, attn)
-
             end = time.time()
             print("whole decoder")
             print((end - start) * 1000)
@@ -929,9 +926,6 @@ class Translator(Inference):
                     break
 
             select_indices = decode_strategy.select_indices
-
-            print("select_indices")
-            print(select_indices)
 
             if any_finished:
                 # Reorder states.
