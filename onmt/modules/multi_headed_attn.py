@@ -58,14 +58,14 @@ def shape(x: Tensor, dim_per_head: int) -> Tensor:
         .transpose(1, 2)
 
 
-def unshape(x: Tensor) -> Tensor:
+def unshape(x: Tensor, dim:int) -> Tensor:
     """
     Compute context.
     [batchsize x heads x length x dimperhead]
     -> [batchsize x length x modeldim]
     """
     return x.transpose(1, 2).contiguous() \
-        .view(x.size(0), -1, x.size(1) * x.size(3))
+        .view(x.size(0), -1, dim)
 
 
 class MultiHeadedAttention(nn.Module):
@@ -113,12 +113,13 @@ class MultiHeadedAttention(nn.Module):
 
     def __init__(self, head_count: int, model_dim: int, dropout: float = 0.1,
                  max_relative_positions: int = 0,
-                 attn_type: str = None, add_qkvbias=False, inference: bool = True) -> None:
+                 attn_type: str = None, add_qkvbias=False, inference: bool = True, is_decoder: bool = True) -> None:
 
         assert model_dim % head_count == 0
         self.dim_per_head = model_dim // head_count
         super(MultiHeadedAttention, self).__init__()
         self.head_count = head_count
+        self.model_dim = model_dim
 
         self.linear_keys = nn.Linear(model_dim, model_dim, bias=add_qkvbias)
         self.linear_values = nn.Linear(model_dim, model_dim, bias=add_qkvbias)
@@ -132,6 +133,7 @@ class MultiHeadedAttention(nn.Module):
         self.layer_cache = (False, {'keys': torch.tensor([]),
                                     'values': torch.tensor([])})
         self.inference = inference
+        self.is_decoder = is_decoder
         if max_relative_positions > 0:
             # https://arxiv.org/pdf/1803.02155.pdf
             # in the paper they suggest either two embeds
@@ -171,8 +173,7 @@ class MultiHeadedAttention(nn.Module):
            * Attention vector in heads ``(batch, head, query_len, key_len)``.
         """
         # 1) Project key, value, and query.
-        # as a reminder at training layer_cache[0] remains False
-        if self.inference:
+        if self.inference and self.is_decoder:
             if self.attn_type == "self":
                 query, key, value = self.linear_query(query),\
                     self.linear_keys(query),\
@@ -204,7 +205,7 @@ class MultiHeadedAttention(nn.Module):
         query = shape(query, self.dim_per_head)
 
         # 2) Calculate and scale scores.
-        query = query / math.sqrt(self.dim_per_head)
+        query = query * (1 / math.sqrt(self.dim_per_head))
         # batch x num_heads x query_len x key_len
         query_key = torch.matmul(query, key.transpose(2, 3))
 
@@ -249,9 +250,9 @@ class MultiHeadedAttention(nn.Module):
             context = unshape(context_original
                               + relative_matmul(drop_attn,
                                                 relations_values,
-                                                False))
+                                                False), self.model_dim)
         else:
-            context = unshape(context_original)
+            context = unshape(context_original, self.model_dim)
 
         output = self.final_linear(context)
 

@@ -36,7 +36,7 @@ class TransformerEncoderLayer(nn.Module):
         self.self_attn = MultiHeadedAttention(
             heads, d_model, dropout=attention_dropout,
             max_relative_positions=max_relative_positions,
-            attn_type="self", add_qkvbias=add_qkvbias, inference=False)
+            attn_type="self", add_qkvbias=add_qkvbias, inference=True, is_decoder=False)
         self.feed_forward = PositionwiseFeedForward(d_model, d_ff, dropout,
                                                     pos_ffn_activation_fn)
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
