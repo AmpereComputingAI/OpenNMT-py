@@ -134,6 +134,7 @@ class MultiHeadedAttention(nn.Module):
                                     'values': torch.tensor([])})
         self.inference = inference
         self.is_decoder = is_decoder
+        
         if max_relative_positions > 0:
             # https://arxiv.org/pdf/1803.02155.pdf
             # in the paper they suggest either two embeds
@@ -145,6 +146,16 @@ class MultiHeadedAttention(nn.Module):
                 vocab_size, self.dim_per_head)
         else:
             self.relative_positions_embeddings = None
+
+    def merge_linear(self):
+        if self.attn_type == 'self':
+            self.combined_linear = nn.Linear(self.model_dim, 3 * self.model_dim, bias=True)
+            print("before assigning shape", self.combined_linear.weight.shape)
+            #self.combined_linear.weight = nn.Parameter(torch.cat((torch.transpose(self.linear_query.weight, 0, 1), torch.transpose(self.linear_keys.weight, 0, 1), torch.transpose(self.linear_values.weight, 0, 1)), dim=0))
+            self.combined_linear.weight = nn.Parameter(torch.cat((self.linear_query.weight, self.linear_keys.weight, self.linear_values.weight), dim=0))
+            self.combined_linear.bias = nn.Parameter(torch.cat((self.linear_query.bias, self.linear_keys.bias, self.linear_values.bias), dim=0))
+            print("original", self.linear_query.weight.shape, self.linear_query.weight, self.linear_keys.weight, self.linear_values.weight)
+            print("merged", self.combined_linear.weight.shape, self.combined_linear.weight)
 
     def update_dropout(self, dropout: float) -> None:
         self.dropout.p = dropout
@@ -175,9 +186,8 @@ class MultiHeadedAttention(nn.Module):
         # 1) Project key, value, and query.
         if self.inference and self.is_decoder:
             if self.attn_type == "self":
-                query, key, value = self.linear_query(query),\
-                    self.linear_keys(query),\
-                    self.linear_values(query)
+                res = self.combined_linear(query)
+                query, key, value = torch.split(res, self.model_dim, dim=2)
                 key = shape(key, self.dim_per_head)
                 value = shape(value, self.dim_per_head)
                 key = torch.cat((cached_keys, key), dim=2)

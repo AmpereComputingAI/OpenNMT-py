@@ -552,6 +552,8 @@ class Inference(object):
     def _trace_decoder(self, decoder_in, src_len, enc_out, self_keys, self_values, ctx_keys, ctx_values, src):
         import copy
         orig_model = copy.deepcopy(self.model.decoder)
+        for layer in orig_model.transformer_layers:
+            layer.self_attn.merge_linear()
         self.model.frozen_decoder = torch.jit.trace(
             orig_model, (decoder_in, src_len, enc_out, torch.tensor([0]), self_keys, self_values, ctx_keys, ctx_values, src))
         self.model.frozen_decoder = torch.jit.freeze(self.model.frozen_decoder)
@@ -871,6 +873,9 @@ class Translator(Inference):
         self_values = [torch.tensor([]) for _ in range(6)]
         ctx_keys = [torch.tensor([]) for _ in range(6)]
         ctx_values = [torch.tensor([]) for _ in range(6)]
+
+        for layer in self.model.decoder.transformer_layers:
+            layer.self_attn.merge_linear()
 
         gold_score = self._gold_score(
             batch,
